@@ -7,67 +7,69 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #1a1a1a;
+      background: #111;
       color: #f1f1f1;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 16px;
+      padding: 20px;
     }
     h1 {
       margin-bottom: 8px;
-      font-size: 1.8rem;
+      font-size: 2rem;
       color: #f39c12;
     }
     #ui {
       display: flex;
-      gap: 20px;
+      gap: 25px;
       margin-bottom: 12px;
-      font-size: 1.1rem;
+      font-size: 1.15rem;
       font-weight: bold;
+      background: #1e1e1e;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 1px solid #333;
     }
     .hud-val { color: #f1c40f; }
     #game-container {
       position: relative;
-      border: 3px solid #444;
+      border: 3px solid #555;
       border-radius: 8px;
       overflow: hidden;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.7);
     }
     canvas {
       display: block;
-      background: #2c3e50;
+      background: #1e272c; /* Mörk gräs/fabriksgolv */
       cursor: crosshair;
     }
     #controls {
-      margin-top: 14px;
+      margin-top: 15px;
       display: flex;
       gap: 12px;
       align-items: center;
     }
     .tower-btn {
-      background: #34495e;
-      border: 2px solid #555;
+      background: #2c3e50;
+      border: 2px solid #7f8c8d;
       color: #fff;
-      padding: 10px 16px;
-      border-radius: 6px;
-      font-size: 0.95rem;
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
       cursor: pointer;
       transition: all 0.2s;
     }
     .tower-btn.selected {
       border-color: #f39c12;
-      background: #46627f;
-    }
-    .tower-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
+      background: #d35400;
     }
     #message {
       margin-top: 10px;
-      height: 20px;
-      font-size: 0.95rem;
+      height: 22px;
+      font-size: 1rem;
+      font-weight: bold;
       color: #e74c3c;
     }
   </style>
@@ -77,8 +79,8 @@
   <h1>🍺 Brewery Defence</h1>
 
   <div id="ui">
-    <div>Bryggeri HP: <span id="hp" class="hud-val">100</span></div>
-    <div>Maltpengar: <span id="money" class="hud-val">150</span> kr</div>
+    <div>Bryggeri: <span id="hp" class="hud-val">100</span>%</div>
+    <div>Pengar: <span id="money" class="hud-val">150</span> kr</div>
     <div>Våg: <span id="wave" class="hud-val">1</span></div>
   </div>
 
@@ -97,6 +99,7 @@
       🧪 Jästbomb (175 kr)
     </button>
   </div>
+
   <div id="message"></div>
 
   <script>
@@ -105,4 +108,307 @@
 
     let hp = 100;
     let money = 150;
-    let wave =
+    let wave = 1;
+    let gameOver = false;
+
+    let valtTornTyp = "malt";
+
+    const tornTyper = {
+      malt: { pris: 50, radie: 130, skada: 14, cooldown: 35, farg: "#e67e22" },
+      humle: { pris: 100, radie: 95, skada: 6, cooldown: 10, farg: "#2ecc71" },
+      jast: { pris: 175, radie: 170, skada: 55, cooldown: 65, farg: "#9b59b6" }
+    };
+
+    const tornLista = [];
+    const fiender = [];
+    const projektiler = [];
+
+    // Vägen fienderna går
+    const stigar = [
+      { x: 800, y: 225 },
+      { x: 520, y: 225 },
+      { x: 520, y: 110 },
+      { x: 280, y: 110 },
+      { x: 280, y: 340 },
+      { x: 100, y: 340 },
+      { x: 100, y: 225 },
+      { x: 0, y: 225 }
+    ];
+
+    function valjTorn(typ) {
+      valtTornTyp = typ;
+      document.querySelectorAll(".tower-btn").forEach(b => b.classList.remove("selected"));
+      document.getElementById("btn-" + typ).classList.add("selected");
+    }
+
+    // Placera torn med musklick
+    canvas.addEventListener("click", (e) => {
+      if (gameOver) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      // Förhindra placering på bryggeriet
+      if (x < 90) {
+        visaMeddelande("För nära bryggeritankarna!");
+        return;
+      }
+
+      // Kontrollera avstånd till vägen så man inte bygger mitt i gatan
+      for (let i = 0; i < stigar.length - 1; i++) {
+        const p1 = stigar[i];
+        const p2 = stigar[i + 1];
+        const distTillLinje = avstandTillLinjesegment(x, y, p1.x, p1.y, p2.x, p2.y);
+        if (distTillLinje < 32) {
+          visaMeddelande("Du kan inte bygga mitt på transportvägen!");
+          return;
+        }
+      }
+
+      const info = tornTyper[valtTornTyp];
+      if (money >= info.pris) {
+        tornLista.push({
+          x: x,
+          y: y,
+          typ: valtTornTyp,
+          radie: info.radie,
+          skada: info.skada,
+          cooldownMax: info.cooldown,
+          cd: 0,
+          farg: info.farg
+        });
+        money -= info.pris;
+        uppdateraHUD();
+      } else {
+        visaMeddelande("Inte tillräckligt med bryggarpengar!");
+      }
+    });
+
+    function avstandTillLinjesegment(px, py, x1, y1, x2, y2) {
+      const l2 = (x2 - x1)**2 + (y2 - y1)**2;
+      if (l2 === 0) return Math.hypot(px - x1, py - y1);
+      let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
+    }
+
+    function visaMeddelande(txt) {
+      const msg = document.getElementById("message");
+      msg.innerText = txt;
+      setTimeout(() => { if (msg.innerText === txt) msg.innerText = ""; }, 2200);
+    }
+
+    function uppdateraHUD() {
+      document.getElementById("hp").innerText = hp;
+      document.getElementById("money").innerText = money;
+      document.getElementById("wave").innerText = wave;
+    }
+
+    let spawnTimer = 0;
+    let spawnKvar = 8;
+
+    function uppdateraSpel() {
+      if (gameOver) return;
+
+      // Spawna fiender
+      spawnTimer++;
+      if (spawnTimer > 65 && spawnKvar > 0) {
+        fiender.push({
+          stigIndex: 0,
+          x: stigar[0].x,
+          y: stigar[0].y,
+          fart: 1.3 + (wave * 0.12),
+          hp: 40 + (wave * 22),
+          maxHp: 40 + (wave * 22),
+          beloning: 15 + wave
+        });
+        spawnKvar--;
+        spawnTimer = 0;
+      }
+
+      // Ny våg
+      if (spawnKvar === 0 && fiender.length === 0) {
+        wave++;
+        spawnKvar = 7 + (wave * 3);
+        money += 50;
+        uppdateraHUD();
+      }
+
+      // Uppdatera fiendepositioner
+      for (let i = fiender.length - 1; i >= 0; i--) {
+        const f = fiender[i];
+        const mal = stigar[f.stigIndex + 1];
+
+        if (!mal) {
+          hp -= 15;
+          fiender.splice(i, 1);
+          uppdateraHUD();
+          if (hp <= 0) {
+            hp = 0;
+            gameOver = true;
+            uppdateraHUD();
+            alert("Ölen är slut och bryggeriet förlorat! Ladda om sidan för att spela igen.");
+          }
+          continue;
+        }
+
+        const dx = mal.x - f.x;
+        const dy = mal.y - f.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < f.fart) {
+          f.x = mal.x;
+          f.y = mal.y;
+          f.stigIndex++;
+        } else {
+          f.x += (dx / dist) * f.fart;
+          f.y += (dy / dist) * f.fart;
+        }
+      }
+
+      // Tornen skjuter
+      tornLista.forEach(t => {
+        if (t.cd > 0) t.cd--;
+
+        if (t.cd <= 0) {
+          let narmaste = null;
+          let minstDist = t.radie;
+
+          fiender.forEach(f => {
+            const d = Math.hypot(f.x - t.x, f.y - t.y);
+            if (d < minstDist) {
+              minstDist = d;
+              narmaste = f;
+            }
+          });
+
+          if (narmaste) {
+            projektiler.push({
+              x: t.x,
+              y: t.y,
+              mal: narmaste,
+              skada: t.skada,
+              farg: t.farg,
+              fart: 7
+            });
+            t.cd = t.cooldownMax;
+          }
+        }
+      });
+
+      // Projektiler rör sig
+      for (let i = projektiler.length - 1; i >= 0; i--) {
+        const p = projektiler[i];
+        if (!fiender.includes(p.mal)) {
+          projektiler.splice(i, 1);
+          continue;
+        }
+
+        const dx = p.mal.x - p.x;
+        const dy = p.mal.y - p.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist < p.fart) {
+          p.mal.hp -= p.skada;
+          if (p.mal.hp <= 0) {
+            money += p.mal.beloning;
+            uppdateraHUD();
+            const fIndex = fiender.indexOf(p.mal);
+            if (fIndex > -1) fiender.splice(fIndex, 1);
+          }
+          projektiler.splice(i, 1);
+        } else {
+          p.x += (dx / dist) * p.fart;
+          p.y += (dy / dist) * p.fart;
+        }
+      }
+    }
+
+    function rita() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 1. RITA VÄGEN / STIGEN (Tydlig ljusgrå kullerstensfärg med kanter)
+      ctx.strokeStyle = "#b59b66"; // Kantfärg
+      ctx.lineWidth = 46;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(stigar[0].x, stigar[0].y);
+      for (let i = 1; i < stigar.length; i++) {
+        ctx.lineTo(stigar[i].x, stigar[i].y);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = "#dfcfab"; // Körbana
+      ctx.lineWidth = 38;
+      ctx.beginPath();
+      ctx.moveTo(stigar[0].x, stigar[0].y);
+      for (let i = 1; i < stigar.length; i++) {
+        ctx.lineTo(stigar[i].x, stigar[i].y);
+      }
+      ctx.stroke();
+
+      // 2. RITA BRYGGERITANKEN (Vänster kant)
+      ctx.fillStyle = "#7f8c8d";
+      ctx.fillRect(0, 160, 65, 130);
+      ctx.fillStyle = "#bdc3c7";
+      ctx.fillRect(5, 165, 55, 120);
+      ctx.fillStyle = "#f39c12"; // Ölnivå
+      ctx.fillRect(10, 200, 45, 80);
+      ctx.fillStyle = "#2c3e50";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillText("BRYGGERI", 6, 185);
+
+      // 3. RITA TORN
+      tornLista.forEach(t => {
+        // Tornbas
+        ctx.fillStyle = "#34495e";
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Tornpipa / tornfärg
+        ctx.fillStyle = t.farg;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+
+      // 4. RITA FIENDER
+      fiender.forEach(f => {
+        ctx.fillStyle = "#c0392b";
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // HP-bar
+        const barBredd = 24;
+        const barHp = Math.max(0, (f.hp / f.maxHp) * barBredd);
+        ctx.fillStyle = "#7f1d1d";
+        ctx.fillRect(f.x - 12, f.y - 20, barBredd, 5);
+        ctx.fillStyle = "#2ecc71";
+        ctx.fillRect(f.x - 12, f.y - 20, barHp, 5);
+      });
+
+      // 5. RITA PROJEKTILER
+      projektiler.forEach(p => {
+        ctx.fillStyle = p.farg;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      requestAnimationFrame(rita);
+    }
+
+    setInterval(uppdateraSpel, 1000 / 60);
+    rita();
+  </script>
+</body>
+</html>
